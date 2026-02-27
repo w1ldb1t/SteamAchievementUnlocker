@@ -1,89 +1,111 @@
-﻿using Common;
+using Common;
 
 namespace Server;
 
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.Http;
-using System.Threading.Tasks;
-using Newtonsoft.Json.Linq;
+using System.Text.Json;
 
 public class SteamService(HttpClient httpClient)
 {
-    public async Task<IEnumerable<JToken>> FetchAchievementNamesForGameAsync(string apiKey, string appId)
+    public async Task<JsonElement> FetchAchievementNamesForGameAsync(string apiKey, string appId)
     {
         var url = $"ISteamUserStats/GetSchemaForGame/v2/?key={apiKey}&appid={appId}&l=english&format=json";
         var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
-        var jo = JObject.Parse(json);
-        return jo["game"]?["availableGameStats"]?["achievements"]?.Children()
-               ?? Enumerable.Empty<JToken>();
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement
+            .GetProperty("game")
+            .GetProperty("availableGameStats")
+            .GetProperty("achievements")
+            .Clone();
     }
 
-    public async Task<IEnumerable<JToken>> FetchAchievementPercentagesForGameAsync(string apiKey, string appId)
+    public async Task<JsonElement> FetchAchievementPercentagesForGameAsync(string appId)
     {
         var url =
-            $"ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/?key={apiKey}&gameid={appId}&l=english&format=json";
+            $"ISteamUserStats/GetGlobalAchievementPercentagesForApp/v0002/?gameid={appId}&format=json";
         var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
-        var jo = JObject.Parse(json);
-        return jo["achievementpercentages"]?["achievements"]?.Children()
-               ?? Enumerable.Empty<JToken>();
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement
+            .GetProperty("achievementpercentages")
+            .GetProperty("achievements")
+            .Clone();
     }
 
-    public async Task<IEnumerable<JToken>> FetchAchievementStatsForGameAsync(string apiKey, string steamId64,
+    public async Task<JsonElement> FetchAchievementStatsForGameAsync(string apiKey, string steamId64,
         string appId)
     {
         var url =
             $"ISteamUserStats/GetPlayerAchievements/v1/?key={apiKey}&steamid={steamId64}&appid={appId}&l=english&format=json";
         var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
-        var jo = JObject.Parse(json);
-        return jo["playerstats"]?["achievements"]?.Children()
-               ?? Enumerable.Empty<JToken>();
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement
+            .GetProperty("playerstats")
+            .GetProperty("achievements")
+            .Clone();
     }
 
-    public async Task<List<Achievement>> GetAchievementListAsync(string apiKey, string steamId64, string appId)
+    public async Task<List<Achievement>> GetAchievementListAsync(string apiKey, string steamId64, string appId,
+        bool includePercentages = true)
     {
         var namesTask = FetchAchievementNamesForGameAsync(apiKey, appId);
-        var percentagesTask = FetchAchievementPercentagesForGameAsync(apiKey, appId);
         var statsTask = FetchAchievementStatsForGameAsync(apiKey, steamId64, appId);
 
-        await Task.WhenAll(namesTask, percentagesTask, statsTask).ConfigureAwait(false);
+        Task<JsonElement>? percentagesTask = null;
+        if (includePercentages)
+            percentagesTask = FetchAchievementPercentagesForGameAsync(appId);
 
-        var percentLookup = percentagesTask.Result
-            .ToDictionary(tok => tok["name"]!.ToString(),
-                tok => tok["percent"]!.Value<double>());
+        await Task.WhenAll(percentagesTask is not null
+            ? new Task[] { namesTask, percentagesTask, statsTask }
+            : new Task[] { namesTask, statsTask }).ConfigureAwait(false);
 
-        var unlockedLookup = statsTask.Result
-            .ToDictionary(tok => tok["apiname"]!.ToString(),
-                tok => tok["achieved"]!.Value<bool>());
+        var percentLookup = new Dictionary<string, double>();
+        if (percentagesTask is not null)
+        {
+            foreach (var tok in percentagesTask.Result.EnumerateArray())
+                percentLookup[tok.GetProperty("name").GetString()!] = tok.GetProperty("percent").GetDouble();
+        }
 
-        return namesTask.Result
-            .Select(tok =>
-            {
-                var name = tok["name"]!.ToString();
-                var displayName = tok["displayName"]!.ToString();
-                percentLookup.TryGetValue(name, out double pct);
-                unlockedLookup.TryGetValue(name, out bool unlocked);
-                return new Achievement(name, displayName, pct, unlocked);
-            })
-            .ToList();
+        var unlockedLookup = new Dictionary<string, (bool achieved, long unlockTime)>();
+        foreach (var tok in statsTask.Result.EnumerateArray())
+        {
+            unlockedLookup[tok.GetProperty("apiname").GetString()!] =
+                (tok.GetProperty("achieved").GetInt32() != 0, tok.GetProperty("unlocktime").GetInt64());
+        }
+
+        var results = new List<Achievement>();
+        foreach (var tok in namesTask.Result.EnumerateArray())
+        {
+            var name = tok.GetProperty("name").GetString()!;
+            var displayName = tok.GetProperty("displayName").GetString()!;
+            percentLookup.TryGetValue(name, out double pct);
+            unlockedLookup.TryGetValue(name, out var stats);
+            results.Add(new Achievement(name, displayName, pct, stats.achieved, stats.unlockTime));
+        }
+
+        return results;
     }
-    
-    /// <summary>
-    /// Fetches the game’s title from the Steam Store API by AppID.
-    /// Returns null if the AppID is invalid or data isn’t available.
-    /// </summary>
+
+    public async Task<string?> GetPlayerNameAsync(string apiKey, string steamId64)
+    {
+        var url = $"ISteamUser/GetPlayerSummaries/v0002/?key={apiKey}&steamids={steamId64}&format=json";
+        var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
+        using var doc = JsonDocument.Parse(json);
+        var players = doc.RootElement.GetProperty("response").GetProperty("players");
+        return players.GetArrayLength() > 0
+            ? players[0].GetProperty("personaname").GetString()
+            : null;
+    }
+
     public async Task<string?> GetGameNameAsync(string appId)
     {
-        // Note: this is an absolute URL, so it will ignore the base address of the HttpClient
-        // TODO: Make this better?
-        var url  = $"https://store.steampowered.com/api/appdetails?appids={appId}&l=english";
+        var url = $"https://store.steampowered.com/api/appdetails?appids={appId}&l=english";
         var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
-        var jo   = JObject.Parse(json);
+        using var doc = JsonDocument.Parse(json);
 
-        var app = jo[appId];
-        if (app?["success"]?.Value<bool>() != true)
+        if (!doc.RootElement.TryGetProperty(appId, out var app))
+            return null;
+        if (!app.TryGetProperty("success", out var success) || !success.GetBoolean())
             return null;
 
-        return app["data"]?["name"]?.Value<string>();
+        return app.GetProperty("data").GetProperty("name").GetString();
     }
 }

@@ -1,7 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Net;
+using System.Text.Json;
 using Common;
-using Microsoft.Extensions.Configuration;
 using ServiceWire.TcpIp;
 
 namespace Server;
@@ -10,16 +10,23 @@ internal class Program
 {
     static void Main()
     {
-        var logger = new Logger(Console.Out);
-        var config = new ConfigurationBuilder()
-            .SetBasePath(AppContext.BaseDirectory)
-            .AddJsonFile("settings.json", optional: true, reloadOnChange: true)
-            .Build();
+        Console.Title = "Steam Achievement Unlocker";
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-        var settings = config.Get<Settings>();
-        if (settings is null)
+        var logger = new Logger(Console.Out);
+        var settingsPath = Path.Combine(AppContext.BaseDirectory, "settings.json");
+        if (!File.Exists(settingsPath))
         {
             logger.Error("Settings file not found. Please create a settings.json file.");
+            return;
+        }
+
+        var settings = JsonSerializer.Deserialize<Settings>(
+            File.ReadAllText(settingsPath),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true, NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString });
+        if (settings is null)
+        {
+            logger.Error("Failed to parse settings.json.");
             return;
         }
 
@@ -33,7 +40,7 @@ internal class Program
         host.AddService<IAchievementService>(achievementService);
         host.Open();
 
-        logger.Info("Steam Achievement Automation");
+        logger.Info("Steam Achievement Unlocker");
 
         using var httpClient = new HttpClient { BaseAddress = new Uri("https://api.steampowered.com/") };
         // an object to talk to Steam's API
@@ -41,55 +48,96 @@ internal class Program
         // a threadsafe counter for generating tickets
         var counter = new ThreadSafeCounter();
 
+        var useReferenceUser = !string.IsNullOrEmpty(settings.ReferenceSteamId64);
+        if (useReferenceUser)
+        {
+            var refName = Task.Run(async () =>
+                await steamService.GetPlayerNameAsync(settings.ApiKey, settings.ReferenceSteamId64!)).Result;
+            logger.Warning($"Using reference profile: {refName ?? "Unknown"} (ID: {settings.ReferenceSteamId64})");
+        }
+
         logger.Info("Kicking off threads for the following games:");
         foreach (var appId in settings.AppId)
         {
             // Capture the loop variable so each lambda gets its own copy
             var game = appId;
             var gameName = Task.Run(async () => await steamService.GetGameNameAsync(game)).Result;
-            logger.Info($"- {gameName}");
+            logger.Info($"• {gameName}");
             _ = Task.Run(async () =>
             {
-                var rnd = new ThreadSafeRandom();
-                while (true)
+                // Build the candidate list once upfront
+                Queue<Achievement> candidates;
+                try
                 {
-                    // Sleep for a random interval specific to this game
-                    var minutes = rnd.Next(settings.MinMinutes, settings.MaxMinutes);
-                    await Task.Delay(TimeSpan.FromMinutes(minutes));
-
-                    // Pick next locked achievement for this game
-                    var achievements =
-                        await steamService.GetAchievementListAsync(settings.ApiKey, settings.SteamId64, game);
-                    achievements.RemoveAll(x => x.Unlocked == true);
-                    achievements.Sort((x, y) => x.Percent.CompareTo(y.Percent));
-                    achievements.Reverse();
-
-                    if (achievements.Count == 0)
+                    if (useReferenceUser)
                     {
-                        logger.Warning("No unlockable achievements found for this game.");
-                        continue;
+                        var myAchievements =
+                            await steamService.GetAchievementListAsync(settings.ApiKey, settings.SteamId64, game,
+                                includePercentages: false);
+                        var myUnlocked = new HashSet<string>(
+                            myAchievements.Where(x => x.Unlocked).Select(x => x.Id));
+
+                        var refAchievements =
+                            await steamService.GetAchievementListAsync(settings.ApiKey,
+                                settings.ReferenceSteamId64!, game, includePercentages: false);
+
+                        candidates = new Queue<Achievement>(refAchievements
+                            .Where(x => x.Unlocked && !myUnlocked.Contains(x.Id))
+                            .OrderBy(x => x.UnlockTime));
                     }
-
-                    long ticket = counter.Increment();
-                    var package = new Package(game, achievements[0]);
-                    achievementService.AddPackage(ticket, package);
-
-                    logger.Info($"Unlocking achievement for {gameName} ...");
-                    logger.Debug($"Ticket {ticket} created for {gameName}:{package.Achievement.Id}.");
-
-                    // Spawn an Agent to open it
-                    var psi = new ProcessStartInfo(
-                        $"{AppDomain.CurrentDomain.BaseDirectory}\\Client\\Client.exe",
-                        $"{ticket.ToString()}")
+                    else
                     {
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-
-                    var process = Process.Start(psi);
-                    Debug.Assert(process is not null);
-                    logger.Debug($"Process with PID {process.Id} started for ticket {ticket}.");
+                        var all = await steamService.GetAchievementListAsync(settings.ApiKey, settings.SteamId64, game);
+                        all.RemoveAll(x => x.Unlocked);
+                        all.Sort((x, y) => y.Percent.CompareTo(x.Percent));
+                        candidates = new Queue<Achievement>(all);
+                    }
                 }
+                catch (Exception ex)
+                {
+                    logger.Error($"[{gameName}] Failed to fetch achievements: {ex.Message}");
+                    return;
+                }
+
+                logger.Info($"{candidates.Count} achievements to unlock for {gameName}.");
+
+                var rnd = new ThreadSafeRandom();
+                while (candidates.Count > 0)
+                {
+                    try
+                    {
+                        var minutes = rnd.Next(settings.MinMinutes, settings.MaxMinutes);
+                        await Task.Delay(TimeSpan.FromMinutes(minutes));
+
+                        var achievement = candidates.Dequeue();
+                        long ticket = counter.Increment();
+                        var package = new Package(game, achievement);
+                        achievementService.AddPackage(ticket, package);
+
+                        logger.Info($"Unlocking achievement for {gameName} ...");
+                        logger.Debug($"Ticket {ticket} created for {gameName}:{achievement.Id}.");
+
+                        var psi = new ProcessStartInfo(
+                            $"{AppDomain.CurrentDomain.BaseDirectory}\\Client.exe",
+                            $"{ticket.ToString()}")
+                        {
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
+
+                        var process = Process.Start(psi);
+                        Debug.Assert(process is not null);
+                        logger.Debug($"Process with PID {process.Id} started for ticket {ticket}.");
+
+                        process.WaitForExit(TimeSpan.FromSeconds(30));
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.Error($"[{gameName}] {ex}");
+                    }
+                }
+
+                logger.Info($"All achievements unlocked for {gameName}!");
             });
         }
 

@@ -1,7 +1,4 @@
-﻿using System;
-using System.IO;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.Text;
 
 namespace Server;
 
@@ -43,8 +40,8 @@ public sealed class Logger(
     {
         // Skip debug in non-debug builds
 #if !DEBUG
-            if (level == LogLevel.Debug)
-                return;
+        if (level == LogLevel.Debug)
+            return;
 #endif
         var formatted = Format(level, message);
         if (_useConsoleColors)

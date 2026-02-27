@@ -14,10 +14,13 @@ The application does not need any special parameters. You just need to put a `se
     "steamId64": "7684XXXXXXXXXXXXX",
     "appId": ["1569040", "1238860"],
     "minMinutes": "5",
-    "maxMinutes": "150"
+    "maxMinutes": "150",
+    "referenceSteamId64": "7684XXXXXXXXXXXXX"
 }
 ```
 The `apiKey` you get it directly through [the Steam portal](https://steamcommunity.com/dev/apikey). The `appId` is the unique Steam identifier for the game you want to unlock achievements for, and you can find it [through SteamDB](https://steamdb.info/apps/).
+
+The `referenceSteamId64` field is optional. When set, achievements will be unlocked in the same order that the reference user earned them, rather than by global popularity. This is useful if you want to mirror another player's achievement progression.
 
 In case you want to build the project from source, keep in mind that you will need a copy of the `steam_api64.dll` for the final build to work, which can be found in pretty much all Steam games.
 

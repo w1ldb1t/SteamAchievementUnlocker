@@ -7,4 +7,5 @@ public class Settings
     public List<string> AppId { get; set; } = [];
     public int MinMinutes { get; set; }
     public int MaxMinutes { get; set; }
+    public string? ReferenceSteamId64 { get; set; }
 }

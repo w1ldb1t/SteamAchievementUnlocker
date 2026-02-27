@@ -1,15 +1,90 @@
-﻿namespace Client;
+namespace Client;
 
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using ServiceWire.TcpIp;
 using System.Net;
-using System.Threading.Tasks;
-using Steamworks;
 using Common;
+
+internal static partial class SteamApi
+{
+    const string Lib = "steam_api64";
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public static extern bool SteamAPI_Init();
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void SteamAPI_Shutdown();
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr SteamAPI_SteamUserStats_v012();
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int SteamAPI_GetHSteamPipe();
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void SteamAPI_ManualDispatch_Init();
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void SteamAPI_ManualDispatch_RunFrame(int hSteamPipe);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public static extern bool SteamAPI_ManualDispatch_GetNextCallback(int hSteamPipe, IntPtr pCallbackMsg);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void SteamAPI_ManualDispatch_FreeLastCallback(int hSteamPipe);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public static extern bool SteamAPI_ISteamUserStats_RequestCurrentStats(IntPtr instance);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public static extern bool SteamAPI_ISteamUserStats_SetAchievement(
+        IntPtr instance,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public static extern bool SteamAPI_ISteamUserStats_StoreStats(IntPtr instance);
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct CallbackMsg_t
+{
+    public int m_hSteamUser;
+    public int m_iCallback;
+    public IntPtr m_pubParam;
+    public int m_cubParam;
+}
+
+[StructLayout(LayoutKind.Explicit, Pack = 8)]
+internal struct UserStatsReceived_t
+{
+    public const int k_iCallback = 1101;
+
+    [FieldOffset(0)] public ulong m_nGameID;
+    [FieldOffset(8)] public int m_eResult;
+    [FieldOffset(12)] public ulong m_steamIDUser;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8)]
+internal struct UserStatsStored_t
+{
+    public const int k_iCallback = 1102;
+
+    public ulong m_nGameID;
+    public int m_eResult;
+}
 
 internal class Program
 {
-    static async Task Main(string[] args)
+    const int k_EResultOK = 1;
+    const int TimeoutMs = 10_000;
+
+    static void Main(string[] args)
     {
         Debug.Assert(args.Length == 1, "Ticket ID must be provided as first argument");
         if (!long.TryParse(args[0], out long ticket))
@@ -29,74 +104,125 @@ internal class Program
         Debug.Assert(host is not null);
         host.LogMessage($"Client with PID {pid} connected to server.", MessageType.Debug);
 
-        var package = await host.GetPackage(ticket);
+        var package = host.GetPackage(ticket).Result;
         if (package is null)
         {
-            // This should never happen, but just in case
             host.LogMessage($"[{pid}] Package not found.", MessageType.Debug);
             return;
         }
 
-        // Write the app ID to the steam_appid.txt file
-        using var writer = new ScopedFileWriter($"{AppDomain.CurrentDomain.BaseDirectory}\\steam_appid.txt");
-        writer.Write(package.AppId);
+        // Set AppID via environment variable
+        Environment.SetEnvironmentVariable("SteamAppId", package.AppId);
 
-        // Check if Steam is running
-        if (!SteamAPI.IsSteamRunning())
+        if (!SteamApi.SteamAPI_Init())
         {
-            host.LogMessage($"(client = {pid}) Steam is not running.", MessageType.Error);
+            host.LogMessage($"(client = {pid}) SteamAPI_Init failed.", MessageType.Error);
             return;
         }
 
-        // Initialize Steam API
-        if (!SteamAPI.Init())
+        // Switch to manual dispatch
+        SteamApi.SteamAPI_ManualDispatch_Init();
+        int pipe = SteamApi.SteamAPI_GetHSteamPipe();
+
+        try
         {
-            host.LogMessage($"(client = {pid}) Steam API initialization failure.", MessageType.Error);
-            return;
+            var userStats = SteamApi.SteamAPI_SteamUserStats_v012();
+            if (userStats == IntPtr.Zero)
+            {
+                host.LogMessage($"(client = {pid}) Failed to get ISteamUserStats.", MessageType.Error);
+                return;
+            }
+
+            // Request stats and wait for UserStatsReceived_t callback
+            SteamApi.SteamAPI_ISteamUserStats_RequestCurrentStats(userStats);
+
+            if (!WaitForCallback<UserStatsReceived_t>(pipe, UserStatsReceived_t.k_iCallback, out var received))
+            {
+                host.LogMessage($"(client = {pid}) Timed out waiting for stats to load.", MessageType.Error);
+                return;
+            }
+
+            if (received.m_eResult != k_EResultOK)
+            {
+                host.LogMessage($"(client = {pid}) RequestCurrentStats failed with EResult {received.m_eResult}.", MessageType.Error);
+                return;
+            }
+
+            // Set the achievement
+            if (!SteamApi.SteamAPI_ISteamUserStats_SetAchievement(userStats, package.Achievement.Id))
+            {
+                host.LogMessage($"(client = {pid}) SetAchievement failed for '{package.Achievement.Id}'.", MessageType.Error);
+                return;
+            }
+
+            // Commit and wait for UserStatsStored_t callback
+            if (!SteamApi.SteamAPI_ISteamUserStats_StoreStats(userStats))
+            {
+                host.LogMessage($"(client = {pid}) StoreStats failed.", MessageType.Error);
+                return;
+            }
+
+            if (!WaitForCallback<UserStatsStored_t>(pipe, UserStatsStored_t.k_iCallback, out var stored))
+            {
+                host.LogMessage($"(client = {pid}) Timed out waiting for StoreStats confirmation.", MessageType.Error);
+                return;
+            }
+
+            if (stored.m_eResult != k_EResultOK)
+            {
+                host.LogMessage($"(client = {pid}) StoreStats completed with EResult {stored.m_eResult}.", MessageType.Error);
+                return;
+            }
+
+            host.LogMessage($"Successfully unlocked achievement {package.Achievement.Name}!");
+        }
+        finally
+        {
+            SteamApi.SteamAPI_Shutdown();
+        }
+    }
+
+    /// <summary>
+    /// Pumps the ManualDispatch loop until a callback with the given ID arrives or timeout elapses.
+    /// Other callbacks are consumed and freed normally.
+    /// </summary>
+    static bool WaitForCallback<T>(int pipe, int targetCallbackId, out T result) where T : struct
+    {
+        result = default;
+        var sw = Stopwatch.StartNew();
+        IntPtr pMsg = Marshal.AllocHGlobal(Marshal.SizeOf<CallbackMsg_t>());
+
+        try
+        {
+            while (sw.ElapsedMilliseconds < TimeoutMs)
+            {
+                SteamApi.SteamAPI_ManualDispatch_RunFrame(pipe);
+
+                while (SteamApi.SteamAPI_ManualDispatch_GetNextCallback(pipe, pMsg))
+                {
+                    var msg = Marshal.PtrToStructure<CallbackMsg_t>(pMsg);
+                    try
+                    {
+                        if (msg.m_iCallback == targetCallbackId)
+                        {
+                            result = Marshal.PtrToStructure<T>(msg.m_pubParam);
+                            return true;
+                        }
+                    }
+                    finally
+                    {
+                        SteamApi.SteamAPI_ManualDispatch_FreeLastCallback(pipe);
+                    }
+                }
+
+                Thread.Sleep(10);
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pMsg);
         }
 
-        // Request current stats
-        if (!SteamUserStats.RequestCurrentStats())
-        {
-            host.LogMessage($"(client = {pid}) Steam user stats request failure.", MessageType.Error);
-            return;
-        }
-
-        // Wait for UserStatsReceived_t callback
-        bool statsReceived = false;
-        Callback<UserStatsReceived_t>.Create(_ => statsReceived = true);
-
-        var deadline = DateTime.UtcNow.AddSeconds(10);
-        while (!statsReceived && DateTime.UtcNow < deadline)
-        {
-            SteamAPI.RunCallbacks();
-            await Task.Delay(50);
-        }
-
-        if (!statsReceived)
-        {
-            host.LogMessage($"(client = {pid}) Timed out waiting for stats from Steam.", MessageType.Error);
-            SteamAPI.Shutdown();
-            return;
-        }
-
-        // Unlock the achievement
-        if (!SteamUserStats.SetAchievement(package.Achievement.Id))
-        {
-            host.LogMessage($"(client = {pid}) Failed to unlock achievement.", MessageType.Error);
-            return;
-        }
-        
-        // Store the stats
-        if (!SteamUserStats.StoreStats())
-        {
-            host.LogMessage($"(client = {pid}) Failed to commit changes to Steam.", MessageType.Error);
-            return;
-        }
-
-        host.LogMessage($"Successfully unlocked achievement {package.Achievement.Name}!");
-
-        // Shutdown Steam API
-        SteamAPI.Shutdown();
+        return false;
     }
 }
