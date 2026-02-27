@@ -22,7 +22,7 @@ internal class Program
 
         // Create IPC connection with host
         var endpoint = new IPEndPoint(IPAddress.Loopback, 9090);
-        var client = new TcpClient<IAchievementService>(endpoint);
+        using var client = new TcpClient<IAchievementService>(endpoint);
         Debug.Assert(client.IsConnected);
 
         IAchievementService host = client.Proxy;
@@ -59,6 +59,24 @@ internal class Program
         if (!SteamUserStats.RequestCurrentStats())
         {
             host.LogMessage($"(client = {pid}) Steam user stats request failure.", MessageType.Error);
+            return;
+        }
+
+        // Wait for UserStatsReceived_t callback
+        bool statsReceived = false;
+        Callback<UserStatsReceived_t>.Create(_ => statsReceived = true);
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!statsReceived && DateTime.UtcNow < deadline)
+        {
+            SteamAPI.RunCallbacks();
+            await Task.Delay(50);
+        }
+
+        if (!statsReceived)
+        {
+            host.LogMessage($"(client = {pid}) Timed out waiting for stats from Steam.", MessageType.Error);
+            SteamAPI.Shutdown();
             return;
         }
 
