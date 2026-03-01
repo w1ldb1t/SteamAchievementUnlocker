@@ -130,8 +130,12 @@ internal class Program
                         logger.Info($"Unlocking achievement for {gameName} ...");
                         logger.Debug($"Ticket {ticket} created for {gameName}:{achievement.Id}.");
 
+                        var clientName = OperatingSystem.IsWindows() ? "Client.exe" : "Client";
+                        var clientPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, clientName);
+                        Debug.Assert(File.Exists(clientPath));
+
                         var psi = new ProcessStartInfo(
-                            $"{AppDomain.CurrentDomain.BaseDirectory}\\Client.exe",
+                            clientPath,
                             $"{ticket.ToString()}")
                         {
                             UseShellExecute = false,

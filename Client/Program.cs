@@ -8,7 +8,11 @@ using Common;
 
 internal static partial class SteamApi
 {
+#if LINUX
+    const string Lib = "libsteam_api.so";
+#else
     const string Lib = "steam_api64";
+#endif
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.I1)]

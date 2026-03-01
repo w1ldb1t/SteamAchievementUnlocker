@@ -10,6 +10,10 @@
         <SelfContained>false</SelfContained>
     </PropertyGroup>
 
+    <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+        <DefineConstants>$(DefineConstants);LINUX</DefineConstants>
+    </PropertyGroup>
+
     <ItemGroup>
       <PackageReference Include="ServiceWire" Version="5.6.0" />
     </ItemGroup>
