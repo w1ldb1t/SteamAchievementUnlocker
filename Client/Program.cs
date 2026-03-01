@@ -6,6 +6,23 @@ using ServiceWire.TcpIp;
 using System.Net;
 using Common;
 
+#if LINUX
+internal static partial class Libc
+{
+    [DllImport("libc", EntryPoint = "dup", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Dup(int fd);
+
+    [DllImport("libc", EntryPoint = "dup2", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Dup2(int oldfd, int newfd);
+
+    [DllImport("libc", EntryPoint = "close", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Close(int fd);
+
+    [DllImport("libc", EntryPoint = "open", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string pathname, int flags);
+}
+#endif
+
 internal static partial class SteamApi
 {
 #if LINUX
@@ -115,11 +132,28 @@ internal class Program
             return;
         }
 
-        // Set AppID via environment variable
+        // Set AppID
         Environment.SetEnvironmentVariable("SteamAppId", package.AppId);
 
-        if (!SteamApi.SteamAPI_Init())
+#if LINUX
+	// Unlike Windows, on Linux the appid file must exist
+        var appIdFile = Path.Combine(AppContext.BaseDirectory, "steam_appid.txt");
+        File.WriteAllText(appIdFile, package.AppId);
+
+        // Suppress all native Steam library output
+        int devNull = Libc.Open("/dev/null", 1); // O_WRONLY
+        Libc.Dup2(devNull, 1);
+        Libc.Dup2(devNull, 2);
+        Libc.Close(devNull);
+#endif
+
+        bool initOk = SteamApi.SteamAPI_Init();
+
+        if (!initOk)
         {
+#if LINUX
+            TryDelete(appIdFile);
+#endif
             host.LogMessage($"(client = {pid}) SteamAPI_Init failed.", MessageType.Error);
             return;
         }
@@ -183,6 +217,9 @@ internal class Program
         finally
         {
             SteamApi.SteamAPI_Shutdown();
+#if LINUX
+            TryDelete(appIdFile);
+#endif
         }
     }
 
@@ -228,5 +265,10 @@ internal class Program
         }
 
         return false;
+    }
+
+    static void TryDelete(string path)
+    {
+        try { File.Delete(path); } catch { }
     }
 }
