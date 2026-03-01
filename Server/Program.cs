@@ -43,15 +43,24 @@ internal class Program
         logger.Info("Steam Achievement Unlocker");
 
         using var httpClient = new HttpClient { BaseAddress = new Uri("https://api.steampowered.com/") };
-        // an object to talk to Steam's API
         var steamService = new SteamService(httpClient);
-        // a threadsafe counter for generating tickets
+
+        // Check the validity of the api key
+        var validKey = Task.Run(async () => await steamService.ValidateApiKeyAsync(settings.ApiKey)).Result;
+        if (!validKey)
+        {
+            logger.Error("Invalid Steam Web API key. Check the 'apiKey' field in settings.json.");
+            return;
+        }
+
+        // Threadsafe counter for generating tickets
         var counter = new ThreadSafeCounter();
 
         var useReferenceUser = !string.IsNullOrEmpty(settings.ReferenceSteamId64);
+        string? refName = null;
         if (useReferenceUser)
         {
-            var refName = Task.Run(async () =>
+            refName = Task.Run(async () =>
                 await steamService.GetPlayerNameAsync(settings.ApiKey, settings.ReferenceSteamId64!)).Result;
             logger.Warning($"Using reference profile: {refName ?? "Unknown"} (ID: {settings.ReferenceSteamId64})");
         }
@@ -107,6 +116,10 @@ internal class Program
                     try
                     {
                         var minutes = rnd.Next(settings.MinMinutes, settings.MaxMinutes);
+                        var timeStr = minutes >= 60
+                            ? $"{minutes / 60.0:F1} hours"
+                            : $"{minutes} minutes";
+                        logger.Info($"[{gameName}] Next achievement in {timeStr}.");
                         await Task.Delay(TimeSpan.FromMinutes(minutes));
 
                         var achievement = candidates.Dequeue();

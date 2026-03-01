@@ -6,6 +6,13 @@ using System.Text.Json;
 
 public class SteamService(HttpClient httpClient)
 {
+    public async Task<bool> ValidateApiKeyAsync(string apiKey)
+    {
+        var url = $"ISteamWebAPIUtil/GetSupportedAPIList/v1?key={apiKey}";
+        var response = await httpClient.GetAsync(url).ConfigureAwait(false);
+        return response.IsSuccessStatusCode;
+    }
+
     public async Task<JsonElement> FetchAchievementNamesForGameAsync(string apiKey, string appId)
     {
         var url = $"ISteamUserStats/GetSchemaForGame/v2/?key={apiKey}&appid={appId}&l=english&format=json";
@@ -53,9 +60,19 @@ public class SteamService(HttpClient httpClient)
         if (includePercentages)
             percentagesTask = FetchAchievementPercentagesForGameAsync(appId);
 
-        await Task.WhenAll(percentagesTask is not null
-            ? new Task[] { namesTask, percentagesTask, statsTask }
-            : new Task[] { namesTask, statsTask }).ConfigureAwait(false);
+        try
+        {
+            await Task.WhenAll(percentagesTask is not null
+                ? new Task[] { namesTask, percentagesTask, statsTask }
+                : new Task[] { namesTask, statsTask }).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            var profileName = await GetPlayerNameAsync(apiKey, steamId64).ConfigureAwait(false);
+            throw new HttpRequestException(
+                $"Cannot access achievements for {profileName ?? "Unknown"} (ID: {steamId64}). Ensure the profile's Game Details are set to Public in Steam's Privacy Settings.",
+                ex, ex.StatusCode);
+        }
 
         var percentLookup = new Dictionary<string, double>();
         if (percentagesTask is not null)
