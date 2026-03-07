@@ -24,8 +24,8 @@ fi
 # Clean only the executables
 rm -f "$OUTPUT/SteamAchievementUnlocker" "$OUTPUT/Client"
 
-dotnet publish ../Server/Server.csproj -c Release -r linux-x64 -o "$OUTPUT" --nologo -v quiet
-dotnet publish ../Client/Client.csproj -c Release -r linux-x64 -o "$OUTPUT" --nologo -v quiet
+dotnet publish "$SCRIPT_DIR/../Server/Server.csproj" -c Release -r linux-x64 -o "$OUTPUT" --nologo -v quiet
+dotnet publish "$SCRIPT_DIR/../Client/Client.csproj" -c Release -r linux-x64 -o "$OUTPUT" --nologo -v quiet
 
 rm -f "$OUTPUT"/*.pdb
 

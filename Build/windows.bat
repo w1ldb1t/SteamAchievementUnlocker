@@ -23,8 +23,8 @@ if not exist "%OUTPUT%\steam_api64.dll" (
 del /q "%OUTPUT%\SteamAchievementUnlocker.exe" 2>nul
 del /q "%OUTPUT%\Client.exe" 2>nul
 
-dotnet publish ..\Server\Server.csproj -c Release -r win-x64 -o "%OUTPUT%" --nologo -v quiet || exit /b 1
-dotnet publish ..\Client\Client.csproj -c Release -r win-x64 -o "%OUTPUT%" --nologo -v quiet || exit /b 1
+dotnet publish "%~dp0..\Server\Server.csproj" -c Release -r win-x64 -o "%OUTPUT%" --nologo -v quiet || exit /b 1
+dotnet publish "%~dp0..\Client\Client.csproj" -c Release -r win-x64 -o "%OUTPUT%" --nologo -v quiet || exit /b 1
 
 del /q "%OUTPUT%\*.pdb" 2>nul
 
