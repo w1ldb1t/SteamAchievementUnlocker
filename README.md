@@ -22,6 +22,8 @@ The `apiKey` you get it directly through [the Steam portal](https://steamcommuni
 
 The `referenceSteamId64` field is optional. When set, achievements will be unlocked in the same order that the reference user earned them, rather than by global popularity. This is useful if you want to mirror another player's achievement progression.
 
+The `minMinutes` and `maxMinutes` fields are optional. When both are set, the program runs in **continuous mode** — it stays alive and unlocks achievements at random intervals within the specified range. When both are omitted, the program runs in **single unlock mode** — it unlocks one achievement per game and exits immediately. Note that you must either set both or omit both; setting only one will result in an error.
+
 In case you want to build the project from source, keep in mind that you will need a copy of the `steam_api64.dll` for the final build to work, which can be found in pretty much all Steam games.
 
 ## Project Overview
