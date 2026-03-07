@@ -9,7 +9,8 @@
         <ApplicationIcon>../Icons/achievement.ico</ApplicationIcon>
         <AssemblyName>SteamAchievementUnlocker</AssemblyName>
         <PublishSingleFile>true</PublishSingleFile>
-        <SelfContained>false</SelfContained>
+        <SelfContained>true</SelfContained>
+        <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     </PropertyGroup>
 
     <ItemGroup>
