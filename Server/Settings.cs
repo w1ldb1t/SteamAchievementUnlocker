@@ -5,7 +5,7 @@ namespace Server;
 
 public class Settings
 {
-    private Settings() { }
+    public Settings() { }
 
     public static Settings? Load(string path)
     {
